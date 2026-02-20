@@ -8,6 +8,7 @@ set -o errexit
 set -o pipefail
 
 PEBBLE_IMAGE=ghcr.io/letsencrypt/pebble:latest
+CHALLSRV_IMAGE=ghcr.io/letsencrypt/pebble-challtestsrv:latest
 PEBBLE_CERTIFICATE_VALIDITY=${PEBBLE_CERTIFICATE_VALIDITY:-7776000} # default validity 90 days
 
 source $(dirname ${0})/../common.sh /..
@@ -56,6 +57,12 @@ data:
           "listenAddress": ":8443",
           "managementListenAddress": ":8444",
           "certificateValidityPeriod": $PEBBLE_CERTIFICATE_VALIDITY
+       },
+       "va": {
+          "dnsPort": 8053,
+          "httpPort": 8056,
+          "tlsPort": 8057,
+          "resolver": "127.0.0.1:8053"
        }
     }
 ---
@@ -89,7 +96,7 @@ spec:
             - -config
             - /etc/pebble/config/pebble-config.json
             - --dnsserver
-            - 10.96.0.10:53
+            - 127.0.0.1:8053
           env:
             ## ref: https://github.com/letsencrypt/pebble#testing-at-full-speed
             - name: PEBBLE_VA_NOSLEEP
@@ -105,6 +112,34 @@ spec:
               path: /dir
               port: acme
               scheme: HTTPS
+        - name: pebble-challtestsrv
+          image: $CHALLSRV_IMAGE
+          args:
+            - -defaultIPv6
+            - ""
+            - -defaultIPv4
+            - 127.0.0.1
+            - -dnsserver
+            - :8053
+            - -http01
+            - :8056
+            - -tlsalpn01
+            - :8057
+            - -management
+            - :8055
+          ports:
+            - name: dns-udp
+              containerPort: 8053
+              protocol: UDP
+            - name: dns-tcp
+              containerPort: 8053
+              protocol: TCP
+            - name: http-01
+              containerPort: 8056
+            - name: tlsalpn01
+              containerPort: 8057
+            - name: mgmt
+              containerPort: 8055
       volumes:
         - name: pebble-config
           configMap:
@@ -149,4 +184,34 @@ spec:
       targetPort: acme-mgmt
       port: 8444
       nodePort: 30444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pebble-challtestsrv
+  namespace: certman-support
+  labels:
+    app.kubernetes.io/name: pebble
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pebble
+  ports:
+    - name: dns-tcp
+      targetPort: dns-tcp
+      port: 8053
+      protocol: TCP
+    - name: dns-udp
+      targetPort: dns-udp
+      port: 8053
+      protocol: UDP
+    - name: http-01
+      targetPort: http-01
+      port: 8056
+    - name: tlsalpn01
+      targetPort: tlsalpn01
+      port: 8057
+    - name: mgmt
+      targetPort: mgmt
+      port: 8055
 EOF
